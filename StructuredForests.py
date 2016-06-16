@@ -12,6 +12,9 @@ from RandomForests import RandomForests
 from RobustPCA import robust_pca
 from utils import conv_tri, gradient
 
+import numpy as np
+from numpy.lib.stride_tricks import as_strided
+
 import pyximport
 pyximport.install(build_dir=".pyxbld",
                   setup_args={"include_dirs": N.get_include()})
@@ -483,6 +486,69 @@ def bsds500_train(input_root):
 
     return data
 
+def sliding_window(arr, window_size):
+    """ Construct a sliding window view of the array"""
+    arr = np.asarray(arr)
+    window_size = int(window_size)
+    if arr.ndim != 2:
+        raise ValueError("need 2-D input")
+    if not (window_size > 0):
+        raise ValueError("need a positive window size")
+    shape = (arr.shape[0] - window_size + 1,
+             arr.shape[1] - window_size + 1,
+             window_size, window_size)
+    if shape[0] <= 0:
+        shape = (1, shape[1], arr.shape[0], shape[3])
+    if shape[1] <= 0:
+        shape = (shape[0], 1, shape[2], arr.shape[1])
+    strides = (arr.shape[1]*arr.itemsize, arr.itemsize,
+               arr.shape[1]*arr.itemsize, arr.itemsize)
+    return as_strided(arr, shape=shape, strides=strides)
+
+def cell_neighbors(arr, i, j, d):
+    """Return d-th neighbors of cell (i, j)"""
+    w = sliding_window(arr, 2*d+1)
+
+    ix = np.clip(i - d, 0, w.shape[0]-1)
+    jx = np.clip(j - d, 0, w.shape[1]-1)
+
+    i0 = max(0, i - d - ix)
+    j0 = max(0, j - d - jx)
+    i1 = w.shape[2] - max(0, d - i + ix)
+    j1 = w.shape[3] - max(0, d - j + jx)
+
+    return w[ix, jx][i0:i1,j0:j1].ravel()
+
+def get_boundaries(img):
+    """Return the boundaries of a given segmented image"""
+    (i,j) = img.shape
+    boundaries = np.ones_like(img)
+    for i_ind in range(i):
+        for j_ind in range(j):
+            neighbours = cell_neighbors(img,i_ind,j_ind,1)
+            if np.max(neighbours) == np.min(neighbours):
+                boundaries[i_ind,j_ind] = 0
+    return boundaries
+
+
+def nyu_train(input_root):
+    import h5py
+    f = h5py.File(input_root)
+    shps = shape(f["images"])
+    data = []
+    
+    img  = np.empty((shps[2],shps[3],4),dtype=np.float32)
+    for index in range(4):
+        img[:,:,0:3] = img_as_float(f["images"][index].swapaxes(0,1).swapaxes(1,2)).astype(np.float32)
+        img[:,:,3] = f["depths"][0].astype(np.float32)
+        bound = []
+        bound.append(get_boundaries(f["labels"][index]))
+        segment = []
+        segment.append(f["labels"][index])
+        
+        data.append((img,bound,segment))
+        print "Importing nyuDataset " + str(index) + " of " + str(shps[0])
+    return data
 
 def bsds500_test(model, input_root, output_root):
     from skimage import img_as_float, img_as_ubyte
